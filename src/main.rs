@@ -78,7 +78,7 @@ pub enum Statement {
     LetStatement { name: String, value: Expression },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Expression {
     Integer(i64),
     String(String),
@@ -94,8 +94,15 @@ pub enum Expression {
 pub struct Program { pub statements: Vec<Statement> }
 
 // ==========================================
-// Phase 3: Syntactic Analyzer (Parser)
+// Phase 3: Syntactic Analyzer (Pratt Parser)
 // ==========================================
+#[derive(PartialEq, PartialOrd, Debug, Clone)]
+pub enum Precedence {
+    Lowest = 1,
+    Sum = 2,      // + หรือ -
+    Product = 3,  // * หรือ /
+}
+
 pub struct Parser { lexer: Lexer, current_token: Token, peek_token: Token }
 
 impl Parser {
@@ -108,6 +115,23 @@ impl Parser {
         self.current_token = self.peek_token.clone();
         self.peek_token = self.lexer.next_token();
     }
+    
+    fn peek_precedence(&self) -> Precedence {
+        match self.peek_token {
+            Token::Plus | Token::Minus => Precedence::Sum,
+            Token::Asterisk | Token::Slash => Precedence::Product,
+            _ => Precedence::Lowest,
+        }
+    }
+    
+    fn current_precedence(&self) -> Precedence {
+        match self.current_token {
+            Token::Plus | Token::Minus => Precedence::Sum,
+            Token::Asterisk | Token::Slash => Precedence::Product,
+            _ => Precedence::Lowest,
+        }
+    }
+
     pub fn parse_program(&mut self) -> Program {
         let mut program = Program { statements: Vec::new() };
         while self.current_token != Token::EOF {
@@ -126,7 +150,7 @@ impl Parser {
         if self.current_token != Token::Assign { return None; }
         self.next_token();
         
-        let value = self.parse_expression();
+        let value = self.parse_expression(Precedence::Lowest);
 
         while self.current_token != Token::Semicolon && self.current_token != Token::EOF {
             self.next_token();
@@ -135,39 +159,43 @@ impl Parser {
         value.map(|val| Statement::LetStatement { name, value: val })
     }
 
-    fn parse_expression(&mut self) -> Option<Expression> {
-        let left = match &self.current_token {
+    fn parse_expression(&mut self, precedence: Precedence) -> Option<Expression> {
+        let mut left_exp = match &self.current_token {
             Token::Number(num) => Expression::Integer(*num),
             Token::String(str_val) => Expression::String(str_val.clone()),
             Token::Identifier(ident) => Expression::Identifier(ident.clone()),
             _ => return None,
         };
 
-        match self.peek_token {
-            Token::Plus | Token::Minus | Token::Asterisk | Token::Slash => {
-                let operator = match self.peek_token {
-                    Token::Plus => "+", Token::Minus => "-",
-                    Token::Asterisk => "*", Token::Slash => "/",
-                    _ => "",
-                }.to_string();
-
-                self.next_token();
-                self.next_token();
-
-                let right = match &self.current_token {
-                    Token::Number(num) => Expression::Integer(*num),
-                    Token::Identifier(ident) => Expression::Identifier(ident.clone()),
-                    _ => return None,
-                };
-
-                return Some(Expression::InfixExpression {
-                    left: Box::new(left),
-                    operator,
-                    right: Box::new(right),
-                });
+        while self.peek_token != Token::Semicolon && precedence < self.peek_precedence() {
+            match self.peek_token {
+                Token::Plus | Token::Minus | Token::Asterisk | Token::Slash => {
+                    self.next_token();
+                    left_exp = self.parse_infix_expression(left_exp)?;
+                }
+                _ => return Some(left_exp),
             }
-            _ => return Some(left),
         }
+        Some(left_exp)
+    }
+
+    fn parse_infix_expression(&mut self, left: Expression) -> Option<Expression> {
+        let operator = match self.current_token {
+            Token::Plus => "+", Token::Minus => "-",
+            Token::Asterisk => "*", Token::Slash => "/",
+            _ => "",
+        }.to_string();
+
+        let precedence = self.current_precedence();
+        self.next_token();
+        
+        let right = self.parse_expression(precedence)?;
+
+        Some(Expression::InfixExpression {
+            left: Box::new(left),
+            operator,
+            right: Box::new(right),
+        })
     }
 }
 
@@ -175,12 +203,11 @@ impl Parser {
 // Phase 4: Execution & Verification
 // ==========================================
 fn main() {
-    println!("=== Axiom Compiler: AST Integration Testing ===");
+    println!("=== Axiom Compiler: Pratt Parser Engine ===");
     
     let axiom_code = String::from(
         "
-        let host = \"127.0.0.1\"; 
-        let max_players = 1000 + 500;
+        let result = 10 + 5 * 2;
         "
     );
     
