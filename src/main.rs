@@ -1,5 +1,5 @@
 // ==========================================
-// ส่วนที่ 1: Lexer (ตัวหั่นคำ ที่เราทำเสร็จแล้ว)
+// Phase 1: Lexical Analyzer (Lexer)
 // ==========================================
 #[derive(Debug, PartialEq, Clone)]
 pub enum Token {
@@ -32,6 +32,9 @@ impl Lexer {
         self.skip_whitespace();
         let tok = match self.ch {
             '=' => Token::Assign, ';' => Token::Semicolon,
+            '+' => Token::Plus, '-' => Token::Minus,
+            '*' => Token::Asterisk, '/' => Token::Slash,
+            '"' => Token::String(self.read_string()),
             '\0' => Token::EOF,
             _ => {
                 if self.is_letter(self.ch) {
@@ -57,40 +60,43 @@ impl Lexer {
         while self.is_digit(self.ch) { self.read_char(); }
         self.input[position..self.position].parse::<i64>().unwrap()
     }
+    fn read_string(&mut self) -> String {
+        let position = self.position + 1;
+        loop {
+            self.read_char();
+            if self.ch == '"' || self.ch == '\0' { break; }
+        }
+        self.input[position..self.position].to_string()
+    }
 }
 
 // ==========================================
-// ส่วนที่ 2: AST (เพิ่มการรองรับ String)
+// Phase 2: Abstract Syntax Tree (AST) Structures
 // ==========================================
 #[derive(Debug)]
 pub enum Statement {
-    LetStatement {
-        name: String,
-        value: Expression,
-    },
+    LetStatement { name: String, value: Expression },
 }
 
 #[derive(Debug)]
 pub enum Expression {
     Integer(i64),
-    String(String),       // เพิ่มการรองรับข้อมูลประเภทข้อความ
-    Identifier(String),   // เพิ่มการรองรับการอ้างอิงชื่อตัวแปรอื่น
+    String(String),
+    Identifier(String),
+    InfixExpression {
+        left: Box<Expression>,
+        operator: String,
+        right: Box<Expression>,
+    }
 }
 
 #[derive(Debug)]
-pub struct Program {
-    pub statements: Vec<Statement>,
-}
+pub struct Program { pub statements: Vec<Statement> }
 
 // ==========================================
-// ส่วนที่ 3: Parser (อัปเกรดให้ฉลาดขึ้น)
+// Phase 3: Syntactic Analyzer (Parser)
 // ==========================================
-// ... (โครงสร้าง Parser เหมือนเดิม) ...
-pub struct Parser {
-    lexer: Lexer,
-    current_token: Token,
-    peek_token: Token,
-}
+pub struct Parser { lexer: Lexer, current_token: Token, peek_token: Token }
 
 impl Parser {
     pub fn new(mut lexer: Lexer) -> Self {
@@ -98,79 +104,93 @@ impl Parser {
         let peek_token = lexer.next_token();
         Parser { lexer, current_token, peek_token }
     }
-
     fn next_token(&mut self) {
         self.current_token = self.peek_token.clone();
         self.peek_token = self.lexer.next_token();
     }
-
     pub fn parse_program(&mut self) -> Program {
         let mut program = Program { statements: Vec::new() };
         while self.current_token != Token::EOF {
-            if let Some(stmt) = self.parse_statement() {
-                program.statements.push(stmt);
-            }
+            if let Some(stmt) = self.parse_statement() { program.statements.push(stmt); }
             self.next_token();
         }
         program
     }
-
     fn parse_statement(&mut self) -> Option<Statement> {
-        match self.current_token {
-            Token::Let => self.parse_let_statement(),
-            _ => None,
-        }
+        match self.current_token { Token::Let => self.parse_let_statement(), _ => None }
     }
-
     fn parse_let_statement(&mut self) -> Option<Statement> {
         self.next_token();
-        let name = match &self.current_token {
-            Token::Identifier(ident) => ident.clone(),
-            _ => return None,
-        };
-
+        let name = match &self.current_token { Token::Identifier(ident) => ident.clone(), _ => return None };
         self.next_token();
         if self.current_token != Token::Assign { return None; }
-
         self.next_token();
         
-        // อัปเกรดตรงนี้: ให้มันวิเคราะห์ว่าค่าที่อยู่หลัง '=' คืออะไร?
-        let value = match &self.current_token {
+        let value = self.parse_expression();
+
+        while self.current_token != Token::Semicolon && self.current_token != Token::EOF {
+            self.next_token();
+        }
+        
+        value.map(|val| Statement::LetStatement { name, value: val })
+    }
+
+    fn parse_expression(&mut self) -> Option<Expression> {
+        let left = match &self.current_token {
             Token::Number(num) => Expression::Integer(*num),
-            Token::String(str_val) => Expression::String(str_val.clone()), // ถ้าเป็น String ให้เก็บเป็น String
-            Token::Identifier(ident) => Expression::Identifier(ident.clone()), // ถ้าเป็นการดึงตัวแปรอื่นมาใส่
+            Token::String(str_val) => Expression::String(str_val.clone()),
+            Token::Identifier(ident) => Expression::Identifier(ident.clone()),
             _ => return None,
         };
 
-        self.next_token();
-        Some(Statement::LetStatement { name, value })
+        match self.peek_token {
+            Token::Plus | Token::Minus | Token::Asterisk | Token::Slash => {
+                let operator = match self.peek_token {
+                    Token::Plus => "+", Token::Minus => "-",
+                    Token::Asterisk => "*", Token::Slash => "/",
+                    _ => "",
+                }.to_string();
+
+                self.next_token();
+                self.next_token();
+
+                let right = match &self.current_token {
+                    Token::Number(num) => Expression::Integer(*num),
+                    Token::Identifier(ident) => Expression::Identifier(ident.clone()),
+                    _ => return None,
+                };
+
+                return Some(Expression::InfixExpression {
+                    left: Box::new(left),
+                    operator,
+                    right: Box::new(right),
+                });
+            }
+            _ => return Some(left),
+        }
     }
 }
 
 // ==========================================
-// ส่วนที่ 4: ทดสอบการทำงาน (Main)
+// Phase 4: Execution & Verification
 // ==========================================
 fn main() {
-    println!("=== Axiom Compiler: Parser Engine v2 ===");
+    println!("=== Axiom Compiler: AST Integration Testing ===");
     
-    // โค้ดที่เราต้องการทดสอบจัดโครงสร้างรอบนี้ ซับซ้อนขึ้น!
     let axiom_code = String::from(
         "
-        let port = 8080;
-        let host = \"127.0.0.1\";
-        let target_port = port;
+        let host = \"127.0.0.1\"; 
+        let max_players = 1000 + 500;
         "
     );
     
-    println!("Source Code: {}", axiom_code);
+    println!("Target Source Code:\n{}", axiom_code);
     println!("------------------------------------");
+    println!("Generated AST Configuration:");
 
     let lexer = Lexer::new(axiom_code);
     let mut parser = Parser::new(lexer);
     
     let program = parser.parse_program();
-    
-    for stmt in program.statements {
-        println!("{:#?}", stmt);
-    }
+    for stmt in program.statements { println!("{:#?}", stmt); }
 }
